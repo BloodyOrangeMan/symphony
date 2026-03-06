@@ -342,12 +342,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
+             "provider" => "codex",
              "counts" => %{"running" => 1, "retrying" => 1},
              "running" => [
                %{
-                 "issue_id" => "issue-http",
-                 "issue_identifier" => "MT-HTTP",
-                 "state" => "In Progress",
+                  "issue_id" => "issue-http",
+                  "provider" => "codex",
+                  "issue_identifier" => "MT-HTTP",
+                  "state" => "In Progress",
                  "session_id" => "thread-http",
                  "turn_count" => 7,
                  "last_event" => "notification",
@@ -381,10 +383,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert issue_payload == %{
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
+             "provider" => "codex",
              "status" => "running",
              "workspace" => %{"path" => Path.join(Config.workspace_root(), "MT-HTTP")},
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
+               "provider" => "codex",
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",

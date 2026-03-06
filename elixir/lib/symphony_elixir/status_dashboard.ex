@@ -1394,6 +1394,35 @@ defmodule SymphonyElixir.StatusDashboard do
     humanize_codex_wrapper_event(suffix, payload)
   end
 
+  defp humanize_codex_method("claude/init", payload) do
+    model =
+      map_path(payload, ["model"]) ||
+        map_path(payload, [:model]) ||
+        "unknown"
+
+    "claude session initialized (#{model})"
+  end
+
+  defp humanize_codex_method("claude/assistant", payload) do
+    content =
+      map_path(payload, ["content"]) ||
+        map_path(payload, [:content]) ||
+        "assistant update"
+
+    "claude assistant: #{truncate_humanized_message(content)}"
+  end
+
+  defp humanize_codex_method("claude/result", payload) do
+    usage =
+      map_path(payload, ["usage"]) ||
+        map_path(payload, [:usage])
+
+    case format_usage_counts(usage) do
+      nil -> "claude turn completed"
+      usage_text -> "claude turn completed (#{usage_text})"
+    end
+  end
+
   defp humanize_codex_method(method, payload) do
     msg_type =
       map_path(payload, ["params", "msg", "type"]) ||
@@ -1523,6 +1552,13 @@ defmodule SymphonyElixir.StatusDashboard do
       other
     end
   end
+
+  defp truncate_humanized_message(message) when is_binary(message) and byte_size(message) > 120 do
+    binary_part(message, 0, 120) <> "..."
+  end
+
+  defp truncate_humanized_message(message) when is_binary(message), do: message
+  defp truncate_humanized_message(message), do: inspect(message)
 
   defp humanize_exec_command_begin(payload) do
     command =

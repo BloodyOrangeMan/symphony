@@ -1,13 +1,13 @@
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
-  Polls Linear and dispatches repository copies to Codex-backed workers.
+  Polls Linear and dispatches repository copies to provider-backed workers.
   """
 
   use GenServer
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentBackend, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -35,7 +35,6 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
-      planning_idle_since: %{},
       codex_totals: nil,
       codex_rate_limits: nil
     ]
@@ -133,9 +132,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(
-        {:codex_worker_update, issue_id, %{event: _, timestamp: _} = update},
-        %{running: running} = state
-      ) do
+      {:agent_worker_update, issue_id, %{event: _, timestamp: _} = update},
+      %{running: running} = state
+    ) do
     case Map.get(running, issue_id) do
       nil ->
         {:noreply, state}
@@ -153,7 +152,12 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_info({:codex_worker_update, issue_id, %{event: _, timestamp: _} = update}, state) do
+    handle_info({:agent_worker_update, issue_id, update}, state)
+  end
+
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+  def handle_info({:agent_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
   def handle_info({:retry_issue, issue_id}, state) do
     result =
@@ -199,6 +203,14 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, :missing_codex_command} ->
         Logger.error("Codex command missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_claude_command} ->
+        Logger.error("Claude command missing in WORKFLOW.md")
+        state
+
+      {:error, {:unsupported_agent_provider, provider}} ->
+        Logger.error("Unsupported agent.provider in WORKFLOW.md: #{inspect(provider)}")
         state
 
       {:error, {:invalid_codex_approval_policy, value}} ->
@@ -363,8 +375,6 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
-        state = clear_planning_idle_mark(state, issue_id)
-
         %{
           state
           | running: Map.delete(state.running, issue_id),
@@ -378,7 +388,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
-    timeout_ms = Config.codex_stall_timeout_ms()
+    timeout_ms = Config.agent_stall_timeout_ms()
 
     cond do
       timeout_ms <= 0 ->
@@ -411,7 +421,7 @@ defmodule SymphonyElixir.Orchestrator do
       |> terminate_running_issue(issue_id, false)
       |> schedule_issue_retry(issue_id, next_attempt, %{
         identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
+        error: "stalled for #{elapsed_ms}ms without agent activity"
       })
     else
       state
@@ -491,7 +501,6 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
-      planning_issue_ready_for_dispatch?(issue, state) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
@@ -610,7 +619,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt) do
-    state = clear_planning_idle_mark(state, issue.id)
     recipient = self()
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
@@ -625,6 +633,7 @@ defmodule SymphonyElixir.Orchestrator do
           Map.put(state.running, issue.id, %{
             pid: pid,
             ref: ref,
+            provider: AgentBackend.provider_name(),
             identifier: issue.identifier,
             issue: issue,
             session_id: nil,
@@ -768,7 +777,7 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
         cleanup_issue_workspace(issue.identifier)
-        {:noreply, state |> clear_planning_idle_mark(issue_id) |> release_issue_claim(issue_id)}
+        {:noreply, release_issue_claim(state, issue_id)}
 
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata)
@@ -776,13 +785,13 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
 
-        {:noreply, state |> clear_planning_idle_mark(issue_id) |> release_issue_claim(issue_id)}
+        {:noreply, release_issue_claim(state, issue_id)}
     end
   end
 
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
-    {:noreply, state |> clear_planning_idle_mark(issue_id) |> release_issue_claim(issue_id)}
+    {:noreply, release_issue_claim(state, issue_id)}
   end
 
   defp cleanup_issue_workspace(identifier) when is_binary(identifier) do
@@ -813,26 +822,22 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if planning_issue?(issue) and metadata[:delay_type] == :continuation do
-      {:noreply, quiesce_planning_issue(state, issue)}
-    else
-      if retry_candidate_issue?(issue, terminal_state_set()) and
+    if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) do
-        {:noreply, dispatch_issue(state, issue, attempt)}
-      else
-        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+      {:noreply, dispatch_issue(state, issue, attempt)}
+    else
+      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
-        {:noreply,
-         schedule_issue_retry(
-           state,
-           issue.id,
-           attempt + 1,
-           Map.merge(metadata, %{
-             identifier: issue.identifier,
-             error: "no available orchestrator slots"
-           })
-         )}
-      end
+      {:noreply,
+       schedule_issue_retry(
+         state,
+         issue.id,
+         attempt + 1,
+         Map.merge(metadata, %{
+           identifier: issue.identifier,
+           error: "no available orchestrator slots"
+         })
+       )}
     end
   end
 
@@ -874,54 +879,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp pick_retry_delay_type(previous_retry, metadata) do
     metadata[:delay_type] || Map.get(previous_retry, :delay_type)
   end
-
-  defp planning_issue?(%Issue{state: state_name}) when is_binary(state_name) do
-    normalize_issue_state(state_name) == "planning"
-  end
-
-  defp planning_issue?(_issue), do: false
-
-  defp planning_issue_ready_for_dispatch?(%Issue{id: issue_id} = issue, %State{} = state)
-       when is_binary(issue_id) do
-    if planning_issue?(issue) do
-      case Map.get(state.planning_idle_since, issue_id) do
-        %DateTime{} = quiet_since ->
-          case issue.updated_at do
-            %DateTime{} = updated_at -> DateTime.compare(updated_at, quiet_since) == :gt
-            _ -> false
-          end
-
-        _ ->
-          true
-      end
-    else
-      true
-    end
-  end
-
-  defp planning_issue_ready_for_dispatch?(_issue, _state), do: true
-
-  defp quiesce_planning_issue(%State{} = state, %Issue{id: issue_id} = issue) when is_binary(issue_id) do
-    quiet_since =
-      case issue.updated_at do
-        %DateTime{} = updated_at -> updated_at
-        _ -> DateTime.utc_now()
-      end
-
-    state
-    |> release_issue_claim(issue_id)
-    |> then(fn updated_state ->
-      %{updated_state | planning_idle_since: Map.put(updated_state.planning_idle_since, issue_id, quiet_since)}
-    end)
-  end
-
-  defp quiesce_planning_issue(state, _issue), do: state
-
-  defp clear_planning_idle_mark(%State{} = state, issue_id) when is_binary(issue_id) do
-    %{state | planning_idle_since: Map.delete(state.planning_idle_since, issue_id)}
-  end
-
-  defp clear_planning_idle_mark(state, _issue_id), do: state
 
   defp find_issue_by_id(issues, issue_id) when is_binary(issue_id) do
     Enum.find(issues, fn
@@ -998,6 +955,7 @@ defmodule SymphonyElixir.Orchestrator do
       |> Enum.map(fn {issue_id, metadata} ->
         %{
           issue_id: issue_id,
+          provider: Map.get(metadata, :provider, Config.agent_provider()),
           identifier: metadata.identifier,
           state: metadata.issue.state,
           session_id: metadata.session_id,
@@ -1030,6 +988,8 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        running: running,
        retrying: retrying,
+       agent_provider: Config.agent_provider(),
+       provider: Config.agent_provider(),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{
@@ -1071,6 +1031,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     {
       Map.merge(running_entry, %{
+        provider: Map.get(update, :provider) || Map.get(running_entry, :provider) || Config.agent_provider(),
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),

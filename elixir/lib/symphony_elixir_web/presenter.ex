@@ -13,6 +13,7 @@ defmodule SymphonyElixirWeb.Presenter do
       %{} = snapshot ->
         %{
           generated_at: generated_at,
+          provider: Map.get(snapshot, :provider) || Map.get(snapshot, :agent_provider) || Config.agent_provider(),
           counts: %{
             running: length(snapshot.running),
             retrying: length(snapshot.retrying)
@@ -64,6 +65,10 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry),
+      provider:
+        (running && Map.get(running, :provider)) ||
+          (retry && Map.get(retry, :provider)) ||
+          Config.agent_provider(),
       status: issue_status(running, retry),
       workspace: %{
         path: Path.join(Config.workspace_root(), issue_identifier)
@@ -97,6 +102,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp running_entry_payload(entry) do
     %{
       issue_id: entry.issue_id,
+      provider: Map.get(entry, :provider) || Config.agent_provider(),
       issue_identifier: entry.identifier,
       state: entry.state,
       session_id: entry.session_id,
@@ -126,6 +132,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp running_issue_payload(running) do
     %{
       session_id: running.session_id,
+      provider: Map.get(running, :provider) || Config.agent_provider(),
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),
