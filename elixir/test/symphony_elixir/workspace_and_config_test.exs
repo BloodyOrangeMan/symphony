@@ -284,6 +284,41 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     }
 
     assert Issue.selected_agent_provider(fallback_issue, "codex") == "codex"
+
+    plain_issue = %Issue{
+      id: "agent-3",
+      labels: ["claude", "frontend"]
+    }
+
+    assert Issue.selected_agent_provider(plain_issue, "codex") == "claude"
+  end
+
+  test "linear client normalizes grouped labels into canonical names" do
+    raw_issue = %{
+      "id" => "issue-agent",
+      "identifier" => "MT-AGENT",
+      "title" => "Grouped labels",
+      "description" => "Uses parent labels",
+      "priority" => 1,
+      "state" => %{"name" => "Todo"},
+      "branchName" => "mt-agent",
+      "url" => "https://example.org/issues/MT-AGENT",
+      "assignee" => nil,
+      "labels" => %{
+        "nodes" => [
+          %{"name" => "claude", "parent" => %{"name" => "agent"}},
+          %{"name" => "Backend"}
+        ]
+      },
+      "inverseRelations" => %{"nodes" => []},
+      "createdAt" => "2026-03-06T00:00:00Z",
+      "updatedAt" => "2026-03-06T00:00:00Z"
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue)
+
+    assert issue.labels == ["agent:claude", "claude", "backend"]
+    assert Issue.selected_agent_provider(issue, "codex") == "claude"
   end
 
   test "linear client normalizes blockers from inverse relations" do

@@ -484,12 +484,44 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp extract_labels(%{"labels" => %{"nodes" => labels}}) when is_list(labels) do
     labels
-    |> Enum.map(& &1["name"])
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&String.downcase/1)
+    |> Enum.flat_map(&normalized_label_names/1)
+    |> Enum.uniq()
   end
 
   defp extract_labels(_), do: []
+
+  defp normalized_label_names(%{"name" => name} = label) when is_binary(name) do
+    normalized_name =
+      name
+      |> String.trim()
+      |> String.downcase()
+
+    parent_name =
+      label
+      |> get_in(["parent", "name"])
+      |> case do
+        value when is_binary(value) ->
+          value
+          |> String.trim()
+          |> String.downcase()
+
+        _ ->
+          nil
+      end
+
+    case {parent_name, normalized_name} do
+      {parent, child} when is_binary(parent) and parent != "" and child != "" ->
+        ["#{parent}:#{child}", child]
+
+      {_, child} when child != "" ->
+        [child]
+
+      _ ->
+        []
+    end
+  end
+
+  defp normalized_label_names(_label), do: []
 
   defp extract_blockers(%{"inverseRelations" => %{"nodes" => inverse_relations}})
        when is_list(inverse_relations) do

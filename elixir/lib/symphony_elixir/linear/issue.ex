@@ -69,6 +69,9 @@ defmodule SymphonyElixir.Linear.Issue do
       @agent_label_prefix <> provider when provider in @supported_agent_providers ->
         provider
 
+      provider when provider in @supported_agent_providers ->
+        provider
+
       _ ->
         nil
     end
