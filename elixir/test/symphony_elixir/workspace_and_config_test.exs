@@ -265,8 +265,25 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     }
 
     assert Issue.label_names(issue) == ["frontend", "infra"]
+    assert Issue.selected_agent_provider(issue, "codex") == "codex"
     assert issue.labels == ["frontend", "infra"]
     refute issue.assigned_to_worker
+  end
+
+  test "linear issue helpers resolve per-issue agent provider labels" do
+    issue = %Issue{
+      id: "agent-1",
+      labels: ["backend", "agent:claude", "priority:high"]
+    }
+
+    assert Issue.selected_agent_provider(issue, "codex") == "claude"
+
+    fallback_issue = %Issue{
+      id: "agent-2",
+      labels: ["agent:unknown", "frontend"]
+    }
+
+    assert Issue.selected_agent_provider(fallback_issue, "codex") == "codex"
   end
 
   test "linear client normalizes blockers from inverse relations" do

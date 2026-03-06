@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentBackend, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -620,6 +620,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp do_dispatch_issue(%State{} = state, issue, attempt) do
     recipient = self()
+    provider = Issue.selected_agent_provider(issue, Config.agent_provider())
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient, attempt: attempt)
@@ -633,7 +634,7 @@ defmodule SymphonyElixir.Orchestrator do
           Map.put(state.running, issue.id, %{
             pid: pid,
             ref: ref,
-            provider: AgentBackend.provider_name(),
+            provider: provider,
             identifier: issue.identifier,
             issue: issue,
             session_id: nil,

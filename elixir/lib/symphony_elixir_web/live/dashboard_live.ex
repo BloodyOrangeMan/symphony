@@ -56,6 +56,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <div class="status-stack">
+            <span class="state-badge">
+              Agent <%= format_provider(@payload[:provider]) %>
+            </span>
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               Live
@@ -80,6 +83,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <% else %>
         <section class="metric-grid">
           <article class="metric-card">
+            <p class="metric-label">Default agent</p>
+            <p class="metric-value"><%= format_provider(@payload.provider) %></p>
+            <p class="metric-detail">Service default when an issue does not override the provider label.</p>
+          </article>
+
+          <article class="metric-card">
             <p class="metric-label">Running</p>
             <p class="metric-value numeric"><%= @payload.counts.running %></p>
             <p class="metric-detail">Active issue sessions in the current runtime.</p>
@@ -102,7 +111,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <article class="metric-card">
             <p class="metric-label">Runtime</p>
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
+            <p class="metric-detail">Total agent runtime across completed and active sessions.</p>
           </article>
         </section>
 
@@ -133,6 +142,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <colgroup>
                   <col style="width: 12rem;" />
                   <col style="width: 8rem;" />
+                  <col style="width: 8rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col />
@@ -141,10 +151,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Provider</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
-                    <th>Codex update</th>
+                    <th>Agent update</th>
                     <th>Tokens</th>
                   </tr>
                 </thead>
@@ -155,6 +166,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class="issue-id"><%= entry.issue_identifier %></span>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
+                    </td>
+                    <td>
+                      <span class="state-badge">
+                        <%= format_provider(entry.provider) %>
+                      </span>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state)}>
@@ -308,6 +324,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp format_provider(nil), do: "Unknown"
+
+  defp format_provider(provider) do
+    provider
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> "Unknown"
+      "codex" -> "Codex"
+      "claude" -> "Claude"
+      other -> String.capitalize(other)
+    end
+  end
 
   defp state_badge_class(state) do
     base = "state-badge"

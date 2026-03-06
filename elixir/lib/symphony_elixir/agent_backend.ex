@@ -12,31 +12,32 @@ defmodule SymphonyElixir.AgentBackend do
   @callback run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   @callback stop_session(session()) :: :ok
 
-  @spec current_module() :: module()
-  def current_module do
-    case Config.agent_provider() do
+  @spec current_module(String.t() | nil) :: module()
+  def current_module(provider \\ nil) do
+    case provider || Config.agent_provider() do
       "claude" -> SymphonyElixir.AgentBackend.Claude
       _ -> SymphonyElixir.AgentBackend.Codex
     end
   end
 
-  @spec provider_name() :: String.t()
-  def provider_name do
-    current_module().provider_name()
+  @spec provider_name(String.t() | nil) :: String.t()
+  def provider_name(provider \\ nil) do
+    current_module(provider).provider_name()
   end
 
-  @spec start_session(Path.t()) :: {:ok, session()} | {:error, term()}
-  def start_session(workspace) do
-    current_module().start_session(workspace)
+  @spec start_session(Path.t(), String.t() | nil) :: {:ok, session()} | {:error, term()}
+  def start_session(workspace, provider \\ nil) do
+    current_module(provider).start_session(workspace)
   end
 
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_turn(session, prompt, issue, opts \\ []) do
-    current_module().run_turn(session, prompt, issue, opts)
+    provider = Keyword.get(opts, :provider)
+    current_module(provider).run_turn(session, prompt, issue, opts)
   end
 
   @spec stop_session(session()) :: :ok
-  def stop_session(session) do
-    current_module().stop_session(session)
+  def stop_session(session, provider \\ nil) do
+    current_module(provider).stop_session(session)
   end
 end

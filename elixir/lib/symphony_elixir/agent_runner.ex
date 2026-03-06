@@ -49,12 +49,13 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_agent_turns(workspace, issue, agent_update_recipient, opts) do
     max_turns = Keyword.get(opts, :max_turns, Config.agent_max_turns())
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    provider = Issue.selected_agent_provider(issue, Config.agent_provider())
 
-    with {:ok, session} <- AgentBackend.start_session(workspace) do
+    with {:ok, session} <- AgentBackend.start_session(workspace, provider) do
       try do
-        do_run_agent_turns(session, workspace, issue, agent_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_agent_turns(session, workspace, issue, agent_update_recipient, opts, issue_state_fetcher, 1, max_turns, provider)
       after
-        AgentBackend.stop_session(session)
+        AgentBackend.stop_session(session, provider)
       end
     end
   end
@@ -67,7 +68,7 @@ defmodule SymphonyElixir.AgentRunner do
     continue_with_issue?(issue, issue_state_fetcher)
   end
 
-  defp do_run_agent_turns(app_session, workspace, issue, agent_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp do_run_agent_turns(app_session, workspace, issue, agent_update_recipient, opts, issue_state_fetcher, turn_number, max_turns, provider) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
@@ -75,16 +76,17 @@ defmodule SymphonyElixir.AgentRunner do
              app_session,
              prompt,
              issue,
-             on_message: agent_message_handler(agent_update_recipient, issue)
+             on_message: agent_message_handler(agent_update_recipient, issue),
+             provider: provider
            ) do
       Logger.info(
-        "Completed agent run for #{issue_context(issue)} provider=#{AgentBackend.provider_name()} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}"
+        "Completed agent run for #{issue_context(issue)} provider=#{provider} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}"
       )
 
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           Logger.info(
-            "Continuing agent run for #{issue_context(refreshed_issue)} provider=#{AgentBackend.provider_name()} after normal turn completion turn=#{turn_number}/#{max_turns}"
+            "Continuing agent run for #{issue_context(refreshed_issue)} provider=#{provider} after normal turn completion turn=#{turn_number}/#{max_turns}"
           )
 
           do_run_agent_turns(
@@ -95,7 +97,8 @@ defmodule SymphonyElixir.AgentRunner do
             opts,
             issue_state_fetcher,
             turn_number + 1,
-            max_turns
+            max_turns,
+            provider
           )
 
         {:continue, refreshed_issue} ->
