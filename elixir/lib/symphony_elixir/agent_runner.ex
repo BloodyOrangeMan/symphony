@@ -59,6 +59,14 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  @doc false
+  @spec continue_with_issue_for_test(Issue.t(), ([String.t()] -> term())) ::
+          {:continue, Issue.t()} | {:done, Issue.t()} | {:error, term()}
+  def continue_with_issue_for_test(%Issue{} = issue, issue_state_fetcher)
+      when is_function(issue_state_fetcher, 1) do
+    continue_with_issue?(issue, issue_state_fetcher)
+  end
+
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
@@ -117,10 +125,15 @@ defmodule SymphonyElixir.AgentRunner do
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) do
+        cond do
+          planning_issue_state?(refreshed_issue.state) ->
+            {:done, refreshed_issue}
+
+          active_issue_state?(refreshed_issue.state) ->
           {:continue, refreshed_issue}
-        else
-          {:done, refreshed_issue}
+
+          true ->
+            {:done, refreshed_issue}
         end
 
       {:ok, []} ->
@@ -141,6 +154,12 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp active_issue_state?(_state_name), do: false
+
+  defp planning_issue_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "planning"
+  end
+
+  defp planning_issue_state?(_state_name), do: false
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     state_name
