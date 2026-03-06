@@ -66,18 +66,20 @@ defmodule SymphonyElixir.AgentBackend.Claude do
   def stop_session(_session), do: :ok
 
   defp start_port(%{workspace: workspace, executable: executable, settings: settings, persisted_session_id: persisted_session_id}, prompt) do
-    args =
-      build_args(prompt, settings, persisted_session_id)
-      |> Enum.map(&String.to_charlist/1)
+    shell_command =
+      executable
+      |> build_args(prompt, settings, persisted_session_id)
+      |> shell_command_with_dev_null_stdin()
+      |> String.to_charlist()
 
     port =
       Port.open(
-        {:spawn_executable, String.to_charlist(executable)},
+        {:spawn_executable, ~c"/bin/sh"},
         [
           :binary,
           :exit_status,
           :stderr_to_stdout,
-          args: args,
+          args: [~c"-lc", shell_command],
           cd: String.to_charlist(workspace),
           line: @port_line_bytes
         ]
@@ -89,8 +91,9 @@ defmodule SymphonyElixir.AgentBackend.Claude do
       {:error, {:claude_start_failed, Exception.message(error)}}
   end
 
-  defp build_args(prompt, settings, persisted_session_id) do
+  defp build_args(executable, prompt, settings, persisted_session_id) do
     base_args = [
+      executable,
       "-p",
       prompt,
       "--output-format",
@@ -104,6 +107,20 @@ defmodule SymphonyElixir.AgentBackend.Claude do
     |> maybe_add_resume_arg(persisted_session_id)
     |> maybe_add_tool_args("--allowedTools", settings.allowed_tools)
     |> maybe_add_tool_args("--disallowedTools", settings.disallowed_tools)
+  end
+
+  defp shell_command_with_dev_null_stdin(args) when is_list(args) do
+    escaped_args =
+      args
+      |> Enum.map(&shell_escape/1)
+      |> Enum.join(" ")
+
+    "exec " <> escaped_args <> " </dev/null"
+  end
+
+  defp shell_escape(value) when is_binary(value) do
+    escaped = String.replace(value, "'", "'\"'\"'")
+    "'" <> escaped <> "'"
   end
 
   defp maybe_add_resume_arg(args, session_id) when is_binary(session_id) and session_id != "" do
@@ -185,7 +202,7 @@ defmodule SymphonyElixir.AgentBackend.Claude do
           issue,
           session,
           "",
-          %{acc | session_id: session_id, result: payload["result"], usage: usage}
+          Map.merge(acc, %{session_id: session_id, result: payload["result"], usage: usage})
         )
 
       {:ok, %{"type" => "result"} = payload} ->
