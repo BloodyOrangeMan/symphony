@@ -23,6 +23,10 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
 skills can make raw Linear GraphQL calls.
 
+When a workflow includes a non-implementation state such as `Planning`,
+Symphony can dispatch a report-only pass, write findings to the issue workpad,
+and then quiesce until fresh tracker activity appears.
+
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 

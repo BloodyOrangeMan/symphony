@@ -3,6 +3,7 @@ tracker:
   kind: linear
   project_slug: "symphony-0c79b11b75ea"
   active_states:
+    - Planning
     - Todo
     - In Progress
     - Merging
@@ -104,6 +105,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 ## Status map
 
 - `Backlog` -> out of scope for this workflow; do not modify.
+- `Planning` -> active non-code report lane; update the workpad with findings and only add a plan when the ticket explicitly asks for one.
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
 - `In Progress` -> implementation actively underway.
@@ -117,7 +119,8 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 1. Fetch the issue by explicit ticket ID.
 2. Read the current state.
 3. Route to the matching flow:
-   - `Backlog` -> do not modify issue content/state; stop and wait for human to move it to `Todo`.
+   - `Backlog` -> do not modify issue content/state; stop and wait for human to move it to `Planning` or `Todo`.
+   - `Planning` -> run the planning-report flow and leave the issue in `Planning` unless a true blocker requires another state.
    - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `In Progress` -> continue execution flow from current scratchpad comment.
@@ -134,7 +137,27 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - only then begin analysis/planning/implementation work.
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
 
-## Step 1: Start/continue execution (Todo or In Progress)
+## Step 1: Planning-report phase (`Planning`)
+
+1.  Find or create a single persistent scratchpad comment for the issue:
+    - Search existing comments for a marker header: `## Codex Workpad`.
+    - Reuse the existing workpad when present; otherwise create one.
+    - Persist the workpad comment ID and only write planning updates to that ID.
+2.  Inspect the issue body, relevant repository context, and existing workpad notes.
+3.  Update the workpad with a bounded report:
+    - summarize findings, evidence, tradeoffs, and the current recommendation
+    - link or embed image/video evidence when it materially improves the report
+    - state explicitly that no repo files, branch, commit, push, or PR were created during this planning pass
+4.  Generate a `### Plan` section only when the ticket explicitly asks for a plan, implementation proposal, or execution breakdown.
+    - If the ticket does not ask for a plan, keep the pass report-only and record that the plan was not requested.
+5.  Do not mutate the repository during `Planning`.
+    - Do not edit repo files or repo-tracked artifacts.
+    - Do not run `pull`, `commit`, `push`, or `land`.
+    - Do not create, attach, or update a PR.
+6.  If planning is blocked by missing required tools, auth, or repository context that prevents a useful report, move the issue according to the workflow and record the blocker in the workpad.
+7.  End the turn while leaving the issue in `Planning`; the runtime will wake planning again only after new tracker activity.
+
+## Step 2: Start/continue execution (Todo or In Progress)
 
 1.  Find or create a single persistent scratchpad comment for the issue:
     - Search existing comments for a marker header: `## Codex Workpad`.
@@ -193,7 +216,7 @@ Use this only when completion is blocked by missing required tools or missing au
   - exact human action needed to unblock.
 - Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
 
-## Step 2: Execution phase (Todo -> In Progress -> Human Review)
+## Step 3: Execution phase (Todo -> In Progress -> Human Review)
 
 1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
 2.  If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
@@ -238,7 +261,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Ensure branch was pushed with any required updates.
     - Then move to `Human Review`.
 
-## Step 3: Human Review and merge handling
+## Step 4: Human Review and merge handling
 
 1. When the issue is in `Human Review`, do not code or change ticket content.
 2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
@@ -247,7 +270,7 @@ Use this only when completion is blocked by missing required tools or missing au
 5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
 6. After merge is complete, move the issue to `Done`.
 
-## Step 4: Rework handling
+## Step 5: Rework handling
 
 1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
@@ -273,7 +296,8 @@ Use this only when completion is blocked by missing required tools or missing au
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
 - For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
-- If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
+- If issue state is `Backlog`, do not modify it; wait for human to move to `Planning` or `Todo`.
+- If issue state is `Planning`, limit work to the non-mutating report flow and do not create code edits, commits, pushes, or PRs.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
 - If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
@@ -291,7 +315,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Workpad template
 
-Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
+Use this exact structure for the persistent workpad comment and keep it updated in place throughout planning and execution:
 
 ````md
 ## Codex Workpad
@@ -299,6 +323,10 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ```text
 <hostname>:<abs-path>@<short-sha>
 ```
+
+### Report
+
+- <latest findings, evidence, tradeoffs, and optional image/video links>
 
 ### Plan
 

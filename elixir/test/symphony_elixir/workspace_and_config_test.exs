@@ -514,6 +514,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
+      planning_idle_since: %{},
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       retry_attempts: %{}
     }
@@ -529,11 +530,63 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  test "planning issue with unchanged updatedAt after idle mark is not dispatch-eligible" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ["Planning", "Todo", "In Progress"])
+
+    quiet_since = ~U[2026-03-06 12:00:00Z]
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      planning_idle_since: %{"planning-1" => quiet_since},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "planning-1",
+      identifier: "MT-1008",
+      title: "Planning chat",
+      state: "Planning",
+      updated_at: quiet_since
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "planning issue with newer updatedAt after idle mark is dispatch-eligible" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ["Planning", "Todo", "In Progress"])
+
+    quiet_since = ~U[2026-03-06 12:00:00Z]
+    newer_update = ~U[2026-03-06 12:05:00Z]
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      planning_idle_since: %{"planning-2" => quiet_since},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "planning-2",
+      identifier: "MT-1009",
+      title: "Planning chat wake",
+      state: "Planning",
+      updated_at: newer_update
+    }
+
+    assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
   test "planning issues are not dispatch-eligible when planning is not active" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
+      planning_idle_since: %{},
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       retry_attempts: %{}
     }

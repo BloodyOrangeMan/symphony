@@ -35,6 +35,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
+      planning_idle_since: %{},
       codex_totals: nil,
       codex_rate_limits: nil
     ]
@@ -132,9 +133,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(
-      {:agent_worker_update, issue_id, %{event: _, timestamp: _} = update},
-      %{running: running} = state
-    ) do
+        {:agent_worker_update, issue_id, %{event: _, timestamp: _} = update},
+        %{running: running} = state
+      ) do
     case Map.get(running, issue_id) do
       nil ->
         {:noreply, state}
@@ -375,6 +376,8 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
+        state = clear_planning_idle_mark(state, issue_id)
+
         %{
           state
           | running: Map.delete(state.running, issue_id),
@@ -501,6 +504,7 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      planning_issue_ready_for_dispatch?(issue, state) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
@@ -619,6 +623,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt) do
+    state = clear_planning_idle_mark(state, issue.id)
     recipient = self()
     provider = Issue.selected_agent_provider(issue, Config.agent_provider())
 
@@ -778,7 +783,7 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
         cleanup_issue_workspace(issue.identifier)
-        {:noreply, release_issue_claim(state, issue_id)}
+        {:noreply, state |> clear_planning_idle_mark(issue_id) |> release_issue_claim(issue_id)}
 
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata)
@@ -786,13 +791,13 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
 
-        {:noreply, release_issue_claim(state, issue_id)}
+        {:noreply, state |> clear_planning_idle_mark(issue_id) |> release_issue_claim(issue_id)}
     end
   end
 
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
-    {:noreply, release_issue_claim(state, issue_id)}
+    {:noreply, state |> clear_planning_idle_mark(issue_id) |> release_issue_claim(issue_id)}
   end
 
   defp cleanup_issue_workspace(identifier) when is_binary(identifier) do
@@ -823,22 +828,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
-         dispatch_slots_available?(issue, state) do
-      {:noreply, dispatch_issue(state, issue, attempt)}
+    if planning_issue?(issue) and metadata[:delay_type] == :continuation do
+      {:noreply, quiesce_planning_issue(state, issue)}
     else
-      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+      if retry_candidate_issue?(issue, terminal_state_set()) and
+           dispatch_slots_available?(issue, state) do
+        {:noreply, dispatch_issue(state, issue, attempt)}
+      else
+        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue.id,
-         attempt + 1,
-         Map.merge(metadata, %{
-           identifier: issue.identifier,
-           error: "no available orchestrator slots"
-         })
-       )}
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt + 1,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no available orchestrator slots"
+           })
+         )}
+      end
     end
   end
 
@@ -880,6 +889,54 @@ defmodule SymphonyElixir.Orchestrator do
   defp pick_retry_delay_type(previous_retry, metadata) do
     metadata[:delay_type] || Map.get(previous_retry, :delay_type)
   end
+
+  defp planning_issue?(%Issue{state: state_name}) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "planning"
+  end
+
+  defp planning_issue?(_issue), do: false
+
+  defp planning_issue_ready_for_dispatch?(%Issue{id: issue_id} = issue, %State{} = state)
+       when is_binary(issue_id) do
+    if planning_issue?(issue) do
+      case Map.get(state.planning_idle_since, issue_id) do
+        %DateTime{} = quiet_since ->
+          case issue.updated_at do
+            %DateTime{} = updated_at -> DateTime.compare(updated_at, quiet_since) == :gt
+            _ -> false
+          end
+
+        _ ->
+          true
+      end
+    else
+      true
+    end
+  end
+
+  defp planning_issue_ready_for_dispatch?(_issue, _state), do: true
+
+  defp quiesce_planning_issue(%State{} = state, %Issue{id: issue_id} = issue) when is_binary(issue_id) do
+    quiet_since =
+      case issue.updated_at do
+        %DateTime{} = updated_at -> updated_at
+        _ -> DateTime.utc_now()
+      end
+
+    state
+    |> release_issue_claim(issue_id)
+    |> then(fn updated_state ->
+      %{updated_state | planning_idle_since: Map.put(updated_state.planning_idle_since, issue_id, quiet_since)}
+    end)
+  end
+
+  defp quiesce_planning_issue(state, _issue), do: state
+
+  defp clear_planning_idle_mark(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | planning_idle_since: Map.delete(state.planning_idle_since, issue_id)}
+  end
+
+  defp clear_planning_idle_mark(state, _issue_id), do: state
 
   defp find_issue_by_id(issues, issue_id) when is_binary(issue_id) do
     Enum.find(issues, fn

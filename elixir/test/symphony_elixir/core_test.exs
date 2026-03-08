@@ -459,6 +459,36 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 500, 1_100)
   end
 
+  test "planning continuation retry quiesces the issue until new tracker activity arrives" do
+    quiet_since = ~U[2026-03-06 12:10:00Z]
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(["planning-chat-1"]),
+      planning_idle_since: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "planning-chat-1",
+      identifier: "MT-700",
+      title: "Planning conversation",
+      state: "Planning",
+      updated_at: quiet_since
+    }
+
+    updated_state =
+      Orchestrator.handle_active_retry_for_test(state, issue, 1, %{
+        identifier: issue.identifier,
+        delay_type: :continuation
+      })
+
+    refute MapSet.member?(updated_state.claimed, issue.id)
+    assert updated_state.planning_idle_since[issue.id] == quiet_since
+  end
+
   test "non-active planning issues do not chain in-process continuation turns" do
     issue = %Issue{
       id: "planning-continue-1",

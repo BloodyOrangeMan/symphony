@@ -28,7 +28,7 @@ defmodule SymphonyElixir.AgentRunner do
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
         raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
-      end
+    end
   end
 
   defp agent_message_handler(recipient, issue) do
@@ -79,15 +79,11 @@ defmodule SymphonyElixir.AgentRunner do
              on_message: agent_message_handler(agent_update_recipient, issue),
              provider: provider
            ) do
-      Logger.info(
-        "Completed agent run for #{issue_context(issue)} provider=#{provider} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}"
-      )
+      Logger.info("Completed agent run for #{issue_context(issue)} provider=#{provider} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info(
-            "Continuing agent run for #{issue_context(refreshed_issue)} provider=#{provider} after normal turn completion turn=#{turn_number}/#{max_turns}"
-          )
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} provider=#{provider} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
           do_run_agent_turns(
             app_session,
@@ -133,6 +129,9 @@ defmodule SymphonyElixir.AgentRunner do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
         cond do
+          planning_issue_state?(refreshed_issue.state) ->
+            {:done, refreshed_issue}
+
           active_issue_state?(refreshed_issue.state) ->
             {:continue, refreshed_issue}
 
@@ -158,6 +157,12 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp active_issue_state?(_state_name), do: false
+
+  defp planning_issue_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "planning"
+  end
+
+  defp planning_issue_state?(_state_name), do: false
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     state_name
